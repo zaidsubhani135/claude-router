@@ -1,0 +1,49 @@
+#!/usr/bin/env zsh
+# braining — brainstorming launcher
+# Responsibilities: define default models, configure Claude behaviour,
+#                   export CLAUDE_ROUTER_MODEL, invoke claude_router.
+# The router handles all model validation, routing, caching, and preset work.
+
+_BRAINING_DIR="${${(%):-%x}:A:h}"
+
+# ── Default model list ────────────────────────────────────────────────────────
+# One model per line. User additions are managed interactively or stored in
+# $XDG_CONFIG_HOME/claude-router/user-models.txt.
+
+typeset -a _BRAINING_DEFAULTS
+_BRAINING_DEFAULTS=(
+    "openrouter/auto"
+    "cohere/north-mini-code"
+    "deepseek/deepseek-v4-flash"
+)
+
+# ── Model selection ───────────────────────────────────────────────────────────
+# Pass the default list to the router as a newline-joined env var, then signal
+# the router to run the interactive picker.
+
+export CLAUDE_ROUTER_DEFAULT_MODELS="${(F)_BRAINING_DEFAULTS}"
+export CLAUDE_ROUTER_MODEL="__pick__"
+
+# ── Load and run the router ───────────────────────────────────────────────────
+
+source "${_BRAINING_DIR}/router/router_engine.zsh"
+claude_router || return 1
+
+# ── Claude behaviour ──────────────────────────────────────────────────────────
+
+export CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1
+export CLAUDE_CODE_PLAN_MODE_INTERVIEW_PHASE=1
+
+export SUPERPOWERS_MODIFIER="You are acting EXCLUSIVELY as a Feature Brainstorming and Polishing sparring partner.
+- Do NOT generate code, write implementation plans, or invoke TDD tools.
+- Your only goal is a conversational debate over feature mechanics, scope creep, and refinement.
+- Pull relevant context from the project filesystem to understand the existing project state, but keep the output entirely conversational.
+- Challenge my assertions, propose UX/DX polishing ideas, and debate the architectural necessity of the feature."
+
+# ── Launch ────────────────────────────────────────────────────────────────────
+
+if [[ $# -eq 0 ]]; then
+    exec claude "/brainstorming"
+else
+    exec claude "/brainstorming $*"
+fi
