@@ -32,7 +32,7 @@ Launch Claude
 Clone or copy the repository anywhere on your system:
 
 ```zsh
-git clone https://github.com/your-org/claude-router ~/.local/share/claude-router
+git clone https://github.com/zaidsubhani135/claude-router ~/.local/share/claude-router
 ```
 
 Add the launchers to your PATH or source them from your shell config:
