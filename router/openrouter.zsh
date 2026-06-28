@@ -35,12 +35,21 @@ validate_model() {
     print -- "${response}" | jq -e '.data | length > 0' > /dev/null 2>&1
 }
 
-# Create or overwrite a preset by slug (idempotent PUT).
-# Usage: create_or_update_preset <slug> <json-payload>
 create_or_update_preset() {
     local slug="${1:?create_or_update_preset requires a slug}"
     local payload="${2:?create_or_update_preset requires a JSON payload}"
-    _or_curl --request PUT --data "${payload}" "${OPENROUTER_API}/presets/${slug}"
+
+    local response
+    response=$(
+        _or_curl --request POST \
+                 --data "${payload}" \
+                 "${OPENROUTER_API}/presets/${slug}/chat/completions"
+    ) || return 1
+
+    # Uncomment when debugging:
+    # print -u2 -- "${response}"
+
+    return 0
 }
 
 # Delete a preset by slug.

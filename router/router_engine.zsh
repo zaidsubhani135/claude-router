@@ -175,14 +175,16 @@ _router_run_preset() {
     # Ensure endpoint data is fresh before entering the menu loop.
     _router_ensure_providers || return 1
 
+    local presets_json=""
+    local action=""
+    local verb=""
+    local ref=""
+    
     while true; do
-        local presets_json
         presets_json=$(preset_load_all "${_ROUTER_MODEL}")
-
-        local action
+    
         action=$(show_preset_menu "${_ROUTER_MODEL}" "${presets_json}") || return 1
-
-        local verb ref
+    
         verb="${action%%:*}"
         ref="${action#*:}"
 
@@ -195,6 +197,11 @@ _router_run_preset() {
             __import__)  _router_preset_import           || true ;;
             __export__)  _router_preset_export           || true ;;
             __back__)    return 0 ;;
+        
+            *)
+                print -u2 "BUG: unexpected preset action [${verb}]"
+                return 1
+                ;;
         esac
     done
 }
@@ -228,7 +235,15 @@ _router_ensure_providers() {
     fi
 
     local providers_raw
-    providers_raw=$(print -- "${json}" | jq -r '.data[].provider_name // empty')
+    providers_raw=$(
+      print -- "${json}" |
+      jq -r '
+        .data?.endpoints? // []
+        | map(.provider_name // empty)
+        | unique
+        | .[]
+      '
+    )
     _ROUTER_PROVIDERS=()
     local _p
     while IFS= read -r _p; do

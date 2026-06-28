@@ -24,13 +24,32 @@ provider_payload() {
     printf '{"provider":"%s","weight":%d}' "${name}" "${weight}"
 }
 
-# Build the JSON body for create_or_update_preset.
-# Usage: preset_payload <slug> <model-id> <providers-json-array>
 preset_payload() {
     local slug="${1:?preset_payload requires a slug}"
     local model="${2:?preset_payload requires a model id}"
     local providers="${3:?preset_payload requires a providers array}"
-    printf '{"slug":"%s","model":"%s","providers":%s}' "${slug}" "${model}" "${providers}"
+
+    local provider_order
+    provider_order=$(
+        print -- "${providers}" |
+        jq '[.[].provider]'
+    )
+
+    jq -nc \
+       --arg model "${model}" \
+       --argjson order "${provider_order}" '
+    {
+      model: $model,
+      messages: [
+        {
+          role: "user",
+          content: "router preset"
+        }
+      ],
+      provider: {
+        order: $order
+      }
+    }'
 }
 
 # ── Local metadata file helpers ───────────────────────────────────────────────

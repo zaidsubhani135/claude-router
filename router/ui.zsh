@@ -235,6 +235,9 @@ show_preset_menu() {
 
     # Hoist idx to avoid repeated local declarations inside case arms.
     local idx input
+    local summary=""
+    local i
+    
     while true; do
         print '' >&2
         printf '  🎯 Presets for\n\n  %s\n\n' "${model}" >&2
@@ -243,9 +246,8 @@ show_preset_menu() {
         if (( total == 0 )); then
             print '  (no presets yet)' >&2
         else
-            local i=1
+            i=1
             while (( i <= total )); do
-                local summary
                 summary=$(print -- "${presets_json}" \
                     | jq -r --argjson idx $(( i - 1 )) \
                         '.[$idx].providers | map(.provider) | join(" → ")')
