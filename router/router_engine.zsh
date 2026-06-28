@@ -6,8 +6,6 @@
 
 # ── Bootstrap ─────────────────────────────────────────────────────────────────
 
-# ${(%):-%x} expands to the path of the file currently being parsed — unlike
-# $0, it stays accurate when this file is sourced rather than executed.
 _ROUTER_DIR="${${(%):-%x}:A:h}"
 
 source "${_ROUTER_DIR}/config.zsh"
@@ -16,6 +14,7 @@ source "${_ROUTER_DIR}/cache.zsh"
 source "${_ROUTER_DIR}/openrouter.zsh"
 source "${_ROUTER_DIR}/preset.zsh"
 source "${_ROUTER_DIR}/backup.zsh"
+source "${_ROUTER_DIR}/provider_intel.zsh"
 source "${_ROUTER_DIR}/ui.zsh"
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -40,7 +39,6 @@ claude_router() {
 # ── Step 1 — Validate environment (no network) ────────────────────────────────
 
 _router_validate_environment() {
-    # ── Dependency check ──────────────────────────────────────────────────────
     local missing=()
     command -v curl > /dev/null 2>&1 || missing+=( 'curl' )
     command -v jq   > /dev/null 2>&1 || missing+=( 'jq' )
@@ -53,18 +51,15 @@ _router_validate_environment() {
         return 1
     fi
 
-    # ── Environment variables ─────────────────────────────────────────────────
     [[ -n "${ANTHROPIC_BASE_URL}" ]] \
         || { die "ANTHROPIC_BASE_URL is not set."; return 1; }
     [[ -n "${ANTHROPIC_AUTH_TOKEN}" ]] \
         || { die "ANTHROPIC_AUTH_TOKEN is not set."; return 1; }
     [[ -n "${CLAUDE_ROUTER_MODEL}" ]] \
-        || { die "CLAUDE_ROUTER_MODEL is not set. The calling script must export it."; return 1; }
+        || { die "CLAUDE_ROUTER_MODEL is not set."; return 1; }
 }
 
 # ── Step 2 — Model selection ──────────────────────────────────────────────────
-# If CLAUDE_ROUTER_MODEL is the sentinel "__pick__", run the interactive picker.
-# Otherwise honour the pre-set value and skip straight to routing mode.
 
 _router_select_model() {
     if [[ "${CLAUDE_ROUTER_MODEL}" != '__pick__' ]]; then
@@ -93,7 +88,6 @@ _router_select_model() {
                 ;;
             __manage__)
                 _router_handle_manage_menu || true
-                # Rebuild list after potential deletions.
                 user_models=( "${(@f)$(_router_load_user_models)}" )
                 all_models=( "${default_models[@]}" )
                 for m in "${user_models[@]}"; do
@@ -110,15 +104,13 @@ _router_select_model() {
     done
 }
 
-# Handle custom model entry: validate, optionally save, set _ROUTER_MODEL.
-# Takes a nameref to the all_models array so it can append on save.
 _router_handle_custom_model() {
     local -n _hcm_models="${1}"
 
     while true; do
         local candidate
         candidate=$(prompt_custom_model)
-        [[ -n "${candidate}" ]] || return 1   # blank = back to picker
+        [[ -n "${candidate}" ]] || return 1
 
         info "Validating \"${candidate}\"…"
         if ! validate_model "${candidate}"; then
@@ -136,7 +128,6 @@ _router_handle_custom_model() {
     done
 }
 
-# Manage saved models: delete entries until the user goes back.
 _router_handle_manage_menu() {
     while true; do
         local -a saved=( "${(@f)$(_router_load_user_models)}" )
@@ -149,7 +140,6 @@ _router_handle_manage_menu() {
 }
 
 # ── Step 3 — Routing mode ─────────────────────────────────────────────────────
-# Precedence: CLAUDE_ROUTER_MODE env var → interactive prompt
 
 _router_select_routing_mode() {
     if [[ -n "${CLAUDE_ROUTER_MODE}" ]]; then
@@ -169,22 +159,20 @@ _router_run_direct() {
 }
 
 # ── Preset mode ───────────────────────────────────────────────────────────────
-# Entry point for the model-scoped preset manager.
 
 _router_run_preset() {
-    # Ensure endpoint data is fresh before entering the menu loop.
     _router_ensure_providers || return 1
 
+    # Load provider intelligence once — reused across all menu interactions.
+    _ROUTER_PROVIDER_INTEL=$(provider_intel_all "${_ROUTER_MODEL}")
+    export _ROUTER_PROVIDER_INTEL
+
     local presets_json=""
-    local action=""
-    local verb=""
-    local ref=""
-    
+    local action="" verb="" ref=""
+
     while true; do
         presets_json=$(preset_load_all "${_ROUTER_MODEL}")
-    
         action=$(show_preset_menu "${_ROUTER_MODEL}" "${presets_json}") || return 1
-    
         verb="${action%%:*}"
         ref="${action#*:}"
 
@@ -197,7 +185,6 @@ _router_run_preset() {
             __import__)  _router_preset_import           || true ;;
             __export__)  _router_preset_export           || true ;;
             __back__)    return 0 ;;
-        
             *)
                 print -u2 "BUG: unexpected preset action [${verb}]"
                 return 1
@@ -208,7 +195,6 @@ _router_run_preset() {
 
 # ── Endpoint cache ─────────────────────────────────────────────────────────────
 
-# Populate _ROUTER_PROVIDERS for _ROUTER_MODEL from cache or API.
 _router_ensure_providers() {
     local endpoint_cache_dir="${CACHE_DIR}/endpoints"
     local safe="${_ROUTER_MODEL//\//-}"
@@ -221,7 +207,6 @@ _router_ensure_providers() {
         info "Using cached endpoint data for ${_ROUTER_MODEL}."
         json=$(< "${ecache}")
     else
-        # Only verify key and hit network when cache is stale.
         if ! cache_valid; then
             verify_api_key || return 1
             refresh_cache  || return 1
@@ -255,9 +240,6 @@ _router_ensure_providers() {
 }
 
 # ── Provider ordering ─────────────────────────────────────────────────────────
-# Populates _ROUTER_ORDERED_PROVIDERS.
-# Precedence: CLAUDE_ROUTER_PROFILE → interactive prompt (no saved-order in
-# preset mode because each named preset owns its own provider list).
 
 _router_choose_provider_order() {
     if [[ -n "${CLAUDE_ROUTER_PROFILE}" ]]; then
@@ -274,25 +256,29 @@ _router_choose_provider_order() {
     fi
 
     print_header "${_ROUTER_MODEL}"
+
+    # Show the intelligence table (no network call — reads from cache).
+    local intel_arr="${_ROUTER_PROVIDER_INTEL:-[]}"
+    show_provider_intelligence "${intel_arr}"
+
+    # Show numbered table as reference for the fallback path.
     show_provider_table "${_ROUTER_PROVIDERS[@]}"
+
     _ROUTER_ORDERED_PROVIDERS=( "${(@f)$(prompt_provider_order "${_ROUTER_PROVIDERS[@]}")}" ) \
         || return 1
 }
 
 # ── Preset actions ────────────────────────────────────────────────────────────
 
-# Launch: export ANTHROPIC_MODEL and return success to break the menu loop.
 _router_preset_launch() {
     local slug="${1:?_router_preset_launch requires a slug}"
     export ANTHROPIC_MODEL="@preset/${slug}"
     show_success "@preset/${slug}"
 }
 
-# Create: choose providers → name → push to OpenRouter → save metadata.
 _router_preset_create() {
     _router_choose_provider_order || return 1
 
-    # Default name: "Preset N+1"
     local presets_json count default_name
     presets_json=$(preset_load_all "${_ROUTER_MODEL}")
     count=$(print -- "${presets_json}" | jq 'length')
@@ -314,7 +300,6 @@ _router_preset_create() {
     info "Preset \"${name}\" created."
 }
 
-# Edit: re-run provider ordering for an existing preset, push update.
 _router_preset_edit() {
     local slug="${1:?_router_preset_edit requires a slug}"
 
@@ -339,7 +324,6 @@ _router_preset_edit() {
     info "Preset \"${name}\" updated."
 }
 
-# Rename: new name → optionally new slug → update OpenRouter + metadata.
 _router_preset_rename() {
     local old_slug="${1:?_router_preset_rename requires a slug}"
 
@@ -358,12 +342,10 @@ _router_preset_rename() {
     local new_slug
     new_slug=$(preset_slug "${_ROUTER_MODEL}" "${new_name}")
 
-    # If the slug changes, delete the old OpenRouter preset first.
     if [[ "${new_slug}" != "${old_slug}" ]]; then
         delete_preset "${old_slug}" 2>/dev/null || true
     fi
 
-    # Fetch existing providers from metadata as compact JSON (not re-encoded string).
     local providers_json payload
     providers_json=$(print -- "${presets_json}" \
         | jq -c --arg s "${old_slug}" '.[] | select(.slug==$s) | .providers')
@@ -376,7 +358,6 @@ _router_preset_rename() {
     info "Preset renamed to \"${new_name}\"."
 }
 
-# Delete: confirm → remove from OpenRouter → remove from metadata.
 _router_preset_delete() {
     local slug="${1:?_router_preset_delete requires a slug}"
 
@@ -389,7 +370,8 @@ _router_preset_delete() {
 
     prompt_delete_preset "${name}" "${_ROUTER_MODEL}" || return 0
 
-    delete_preset "${slug}" 2>/dev/null || warn "Could not delete preset on OpenRouter (may already be gone)."
+    delete_preset "${slug}" 2>/dev/null \
+        || warn "Could not delete preset on OpenRouter (may already be gone)."
     preset_remove "${_ROUTER_MODEL}" "${slug}"
     info "Preset \"${name}\" deleted."
 }

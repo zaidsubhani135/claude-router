@@ -7,14 +7,16 @@ A model router for [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 Instead of hardcoding a model, you choose one at launch time and optionally configure which providers serve it and in what priority order. Your configuration is saved locally and restored automatically on the next launch.
 
 ```
-Select model
+Select model  (fzf picker with metadata preview)
     ↓
 Choose launch mode: Direct or Preset
     ↓
 Direct → export ANTHROPIC_MODEL and launch Claude
     ↓
-Preset → manage named presets for the selected model
-         (create / edit / rename / delete / backup / restore)
+Preset → provider intelligence table
+         → interactive provider selection
+         → manage named presets
+           (create / edit / rename / delete / backup / restore)
     ↓
 Launch Claude
 ```
@@ -26,6 +28,7 @@ Launch Claude
 - [jq](https://stedolan.github.io/jq/) 1.6 or later
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude` CLI)
 - An [OpenRouter](https://openrouter.ai) account
+- **[fzf](https://github.com/junegunn/fzf)** (optional but strongly recommended — enables the enhanced UI; falls back to numbered menus without it)
 
 ## Installation
 
@@ -50,7 +53,7 @@ ln -s ~/.local/share/claude-router/braining ~/.local/bin/braining
 ln -s ~/.local/share/claude-router/superpowers ~/.local/bin/superpowers
 ```
 
-The router directory (`router/`) must remain a sibling of the launcher scripts. The installation path does not matter — all module resolution is relative.
+The `router/` directory must remain a sibling of the launcher scripts.
 
 ## Configuration
 
@@ -84,6 +87,79 @@ All data follows the [XDG Base Directory Specification](https://specifications.f
 
 Defaults to `~/.config/claude-router/` and `~/.cache/claude-router/` when XDG variables are not set.
 
+## Enhanced UI (fzf)
+
+When [fzf](https://github.com/junegunn/fzf) is installed, the router uses interactive menus with search, arrow-key navigation, and preview panes.
+
+**Install fzf:**
+```zsh
+brew install fzf          # macOS
+apt-get install fzf       # Debian/Ubuntu
+dnf install fzf           # Fedora
+```
+
+Without fzf, the router automatically falls back to the original numbered-list menus with no loss of functionality. A one-time warning is printed the first time fzf is expected but absent.
+
+## Provider Intelligence Table
+
+When creating or editing presets, the router displays a live provider metrics table derived from cached OpenRouter endpoint data:
+
+```
+  Provider          In$/M     Out$/M    Uptime    Latency  Throughput
+  ────────────────  ────────  ────────  ────────  ───────  ──────────
+  DeepSeek          0.1400    0.2800    99.87%    584ms    120t/s
+  Fireworks         0.1400    0.2800    96.56%    706ms    98t/s
+  Baidu             0.0980    0.1960    N/A       N/A      N/A
+```
+
+**Fields displayed:**
+- **In$/M** — prompt cost per million tokens (USD)
+- **Out$/M** — completion cost per million tokens (USD)
+- **Uptime** — 30-minute uptime percentage
+- **Latency** — median time to first token (TTFT)
+- **Throughput** — median output tokens per second
+
+Fields are `N/A` when OpenRouter does not provide data for that provider. Values are read from the already-cached endpoint response — no additional API calls are made.
+
+**Data Policy:** OpenRouter does not expose per-provider training or data-retention policy via its API. The verbose view shows `Unknown` for all providers. Do not rely on this router for data policy decisions; consult OpenRouter's [Privacy documentation](https://openrouter.ai/docs/guides/privacy/data-collection) and individual provider terms directly.
+
+## Verbose Provider View
+
+In the fzf provider picker, the preview pane shows full metadata for the highlighted provider:
+
+```
+  Provider: DeepSeek
+
+  Context Window:    65k
+  Max Output Tokens: 8192
+  Quantization:      fp16
+
+  Prompt Cost:       0.1400 $/M tokens
+  Completion Cost:   0.2800 $/M tokens
+
+  Latency P50 (TTFT):  584ms
+  Latency P90 (TTFT):  901ms
+  Throughput P50:      120t/s
+  Uptime (30m):        99.87%
+  Implicit Caching:    Yes
+
+  Data Policy:       Unknown
+```
+
+## Sorting
+
+In the provider intelligence table, sort by pressing a key before confirming selection:
+
+| Key | Sort by |
+|-----|---------|
+| `s` | Cost (cheapest first) |
+| `l` | Latency (fastest first) |
+| `u` | Uptime (best first) |
+| `t` | Throughput (highest first) |
+| `n` | Provider name (A–Z) |
+
+Sorting affects only the table view. It never modifies stored preset priorities or routing order.
+
 ## Launchers
 
 ### `braining`
@@ -96,7 +172,7 @@ Launches Claude in standard execution mode with an expanded default model list.
 
 ## Backup and restore
 
-From the preset manager (Preset mode → `x` to export, `i` to import):
+From the preset manager (Preset mode → `x`/📤 to export, `i`/📥 to import):
 
 - **Export** writes a single versioned JSON file containing all user models and preset metadata.
 - **Import** supports `merge` (keep existing, add imported) and `replace` (overwrite all) modes. Imported presets are automatically recreated on OpenRouter.
@@ -114,8 +190,9 @@ braining / superpowers     (thin launchers — model list + Claude behaviour onl
         ├── cache.zsh           (model catalogue cache lifecycle)
         ├── openrouter.zsh      (REST API — curl wrappers only)
         ├── preset.zsh          (local metadata I/O + JSON payload builders)
+        ├── provider_intel.zsh  (provider metadata extraction + display)  ← NEW
         ├── backup.zsh          (export / import)
-        └── ui.zsh              (all terminal prompts and display)
+        └── ui.zsh              (all terminal prompts and display; fzf + fallback)
 ```
 
 Each module has exactly one responsibility. No business logic lives in the launchers. The router is fully independent of which launcher invokes it.
