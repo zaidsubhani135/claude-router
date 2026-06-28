@@ -2,18 +2,16 @@
 # ui.zsh — every prompt and display element
 # No networking.  No preset building.  No cache logic.
 #
-# fzf is used when available.  When it is absent, all menus fall back to the
+# fzf is used when available.  When absent, all menus fall back to the
 # original numbered-list implementation so the router remains fully functional
 # on minimal environments (Chromebook/Crostini, plain SSH sessions, etc.).
 
 # ── fzf detection ─────────────────────────────────────────────────────────────
 
-# Returns 0 if fzf is available, 1 otherwise.
 _ui_has_fzf() {
     command -v fzf > /dev/null 2>&1
 }
 
-# One-time warning (suppressed after first call in a session).
 _UI_FZF_WARNED=0
 _ui_warn_no_fzf() {
     (( _UI_FZF_WARNED )) && return
@@ -35,12 +33,9 @@ print_header() {
 
 # ── Model picker ──────────────────────────────────────────────────────────────
 
-# fzf-based model picker with preview showing model metadata from cache.
-# Prints a model string | "__custom__" | "__manage__"
 _ui_fzf_model_selection() {
     local -a models=("${@}")
 
-    # Build fzf input: one model per line.
     local fzf_input=""
     local m
     for m in "${models[@]}"; do
@@ -48,22 +43,6 @@ _ui_fzf_model_selection() {
     done
     fzf_input+="+ Add custom model…"$'\n'
     fzf_input+="⚙ Manage saved models…"
-
-    local preview_cmd
-    preview_cmd='echo "Model: {}"
-    cache="${XDG_CACHE_HOME:-${HOME}/.cache}/claude-router/models.json"
-    if [[ -f "${cache}" ]]; then
-        jq -r --arg m "{}" '"'"'
-            .data // [] | map(select(.id == $m)) | first //
-            {"id": $m, "name": "(not found in cache)", "description": "Run a search to populate."}
-        '"'"' < "${cache}" 2>/dev/null |
-        jq -r '"'"'
-            "  Name:    " + (.name // "Unknown"),
-            "  Context: " + (if .context_length then (.context_length | tostring) + " tokens" else "Unknown" end),
-            "  Created: " + (if .created then (.created | strftime("%Y-%m-%d")) else "Unknown" end),
-            "  Desc:    " + (.description // "No description")
-        '"'"' 2>/dev/null
-    fi'
 
     local result
     result=$(
@@ -73,8 +52,7 @@ _ui_fzf_model_selection() {
             --height '~40%' \
             --layout reverse \
             --border rounded \
-            --preview "${preview_cmd}" \
-            --preview-window 'right:40%:wrap' \
+            --no-preview \
             --header '  ↑↓ navigate · Enter select · / search · Esc cancel' \
             2>/dev/tty
     ) || return 1
@@ -86,7 +64,6 @@ _ui_fzf_model_selection() {
     esac
 }
 
-# Numbered-list fallback (original implementation).
 show_model_list() {
     local -a models=("${@}")
     local i=1
@@ -156,8 +133,6 @@ prompt_save_model() {
 
 # ── Saved model manager ───────────────────────────────────────────────────────
 
-# fzf-based saved model manager.
-# Prints a model string to delete | "__back__"
 _ui_fzf_manage_menu() {
     local -a models=("${@}")
     local total="${#models[@]}"
@@ -170,7 +145,7 @@ _ui_fzf_manage_menu() {
         return 0
     fi
 
-    local fzf_input
+    local fzf_input=""
     local m
     for m in "${models[@]}"; do
         fzf_input+="${m}"$'\n'
@@ -185,6 +160,7 @@ _ui_fzf_manage_menu() {
             --height '~30%' \
             --layout reverse \
             --border rounded \
+            --no-preview \
             --header '  Select a model to DELETE it · Esc / Back to return' \
             2>/dev/tty
     ) || { print -- '__back__'; return 0; }
@@ -252,7 +228,6 @@ show_manage_menu() {
 
 # ── Routing mode ──────────────────────────────────────────────────────────────
 
-# fzf-based routing mode picker.
 _ui_fzf_routing_mode() {
     local result
     result=$(
@@ -318,75 +293,63 @@ show_provider_table() {
     print '' >&2
 }
 
-# ── Provider ordering (fzf multi-select + reorder) ───────────────────────────
+# ── Provider ordering (fzf multi-select) ─────────────────────────────────────
 
-# fzf multi-select provider picker with intelligence preview.
-# Accepts provider names array. Prints ordered names (newline-separated).
-_ui_fzf_provider_order() {
+# Build provider fzf input lines from intel array.
+# Falls back to bare provider names when intel is empty.
+_ui_build_provider_lines() {
     local -a providers=("${@}")
     local intel_arr="${_ROUTER_PROVIDER_INTEL:-[]}"
-
-    # Build preview script that shows verbose metadata for the highlighted item.
-    local preview_script
-    preview_script='
-name="{}"
-# Extract provider name from fzf line (strip leading metrics)
-pname=$(echo "${name}" | sed '"'"'s/^[[:space:]]*//;s/[[:space:]].*//' )
-echo "Provider: ${pname}"
-echo ""
-echo "  Fetching from cached endpoint data..."
-'
-    # Build fzf input lines: "ProviderName  |  metrics…"
-    local fzf_input=""
-    local p count obj line
-    count=$(print -- "${intel_arr}" | jq 'length')
+    local p obj line
     for p in "${providers[@]}"; do
-        # Try to get a formatted fzf line from intel; fall back to name only.
-        obj=$(print -- "${intel_arr}" | jq -c --arg n "${p}" '.[] | select(.provider_name == $n)')
+        obj=$(print -- "${intel_arr}" | jq -c --arg n "${p}" '.[] | select(.provider_name == $n)' 2>/dev/null)
         if [[ -n "${obj}" && "${obj}" != 'null' ]]; then
             line=$(provider_intel_fzf_line "${obj}")
         else
             line="${p}"
         fi
-        fzf_input+="${line}"$'\n'
+        print -- "${line}"
     done
+}
 
-    # Phase 1: multi-select in desired priority order.
+_ui_fzf_provider_order() {
+    local -a providers=("${@}")
+
+    # Write provider lines to a temp file so fzf --bind reload can read them.
+    local tmplines
+    tmplines=$(mktemp) || { warn "Cannot create temp file."; return 1; }
+    _ui_build_provider_lines "${providers[@]}" > "${tmplines}"
+
     print '' >&2
     print '  ── Provider Selection ──────────────────────────────────────' >&2
-    print '  TAB to select/deselect · Enter to confirm selection' >&2
-    print '  s=cost  l=latency  u=uptime  t=throughput  n=name (sort view)' >&2
+    print '  TAB to select · Enter to confirm · Esc to cancel' >&2
+    print '  (Select in your desired priority order)' >&2
     print '' >&2
 
     local selected_lines
     selected_lines=$(
-        print -- "${fzf_input}" \
-        | fzf \
+        fzf \
             --prompt '  Providers › ' \
             --multi \
             --height '~60%' \
             --layout reverse \
             --border rounded \
+            --no-preview \
             --header '  TAB select · ↑↓ navigate · Enter confirm · Esc cancel' \
-            --preview-window 'right:50%:wrap' \
-            --preview "
-                raw=\$(echo {} | sed 's/^[[:space:]]*//' | cut -d' ' -f1)
-                echo \"Provider: \${raw}\"
-                echo \"\"
-                echo \"  (Full metrics visible in the table above)\"
-            " \
-            --bind 's:reload(echo '"'"'${fzf_input}'"'"' | sort -t: -k1)' \
+            < "${tmplines}" \
             2>/dev/tty
-    ) || return 1
+    )
+    local rc=$?
+    rm -f "${tmplines}"
 
+    (( rc != 0 )) && return 1
     [[ -z "${selected_lines}" ]] && { warn "No providers selected."; return 1; }
 
-    # Extract provider names from the fzf output lines (first whitespace-delimited token).
+    # Extract the provider name: the first whitespace-delimited token on each line.
     local line pname
     while IFS= read -r line; do
         [[ -z "${line}" ]] && continue
-        # Strip leading spaces, take first word (provider name).
-        pname=$(print -- "${line}" | sed 's/^[[:space:]]*//' | awk '{print $1}')
+        pname="${line%%[[:space:]]*}"
         [[ -n "${pname}" ]] && print -- "${pname}"
     done <<< "${selected_lines}"
 }
@@ -443,9 +406,11 @@ prompt_provider_order() {
 
 # ── Preset menu (fzf unified) ─────────────────────────────────────────────────
 
-# fzf-based unified preset menu.
-# Prints: launch:<slug> | edit:<slug> | rename:<slug> | delete:<slug>
-#       | __create__ | __import__ | __export__ | __back__
+# fzf preset menu.
+# Action is encoded as a TWO-STEP interaction:
+#   Step 1 — fzf picks an item; always outputs: "ACTION SLUG_OR_SENTINEL"
+#   Step 2 — for presets, a second fzf asks what to do (launch/edit/rename/delete)
+# This avoids --bind become (requires fzf >=0.36) and quoting issues entirely.
 _ui_fzf_preset_menu() {
     local model="${1:?_ui_fzf_preset_menu requires a model}"
     local presets_json="${2:?_ui_fzf_preset_menu requires presets JSON}"
@@ -453,13 +418,17 @@ _ui_fzf_preset_menu() {
     local total
     total=$(print -- "${presets_json}" | jq 'length')
 
-    local fzf_input='➕  Create new preset'$'\n'
-    fzf_input+='📥  Import backup'$'\n'
-    fzf_input+='📤  Export backup'$'\n'
-    fzf_input+='⬅   Back to model selection'
+    # ── Build input list ────────────────────────────────────────────────────
+
+    # Actions section (always present)
+    local fzf_input
+    fzf_input="ACTION:__create__  ➕  Create new preset"$'\n'
+    fzf_input+="ACTION:__import__  📥  Import backup"$'\n'
+    fzf_input+="ACTION:__export__  📤  Export backup"$'\n'
+    fzf_input+="ACTION:__back__    ⬅   Back to model selection"
 
     if (( total > 0 )); then
-        fzf_input+=$'\n''──────────────'
+        fzf_input+=$'\n'"────────────────────────────────────────────"
         local i name slug summary
         for (( i = 0; i < total; i++ )); do
             name=$(print -- "${presets_json}" | jq -r ".[$i].name")
@@ -467,52 +436,73 @@ _ui_fzf_preset_menu() {
             summary=$(print -- "${presets_json}" | jq -r \
                 --argjson idx "${i}" \
                 '.[$idx].providers | map(.provider) | join(" → ")')
-            fzf_input+=$'\n'"${name}  [${summary}]  ::slug::${slug}"
+            fzf_input+=$'\n'"PRESET:${slug}  ⚡ ${name}  [${summary}]"
         done
     fi
 
-    local result
-    result=$(
+    # ── Step 1: pick item ───────────────────────────────────────────────────
+
+    local raw_pick
+    raw_pick=$(
         print -- "${fzf_input}" \
         | fzf \
-            --prompt "  Presets for ${model[1,30]} › " \
+            --prompt "  Presets › " \
             --height '~50%' \
             --layout reverse \
             --border rounded \
             --no-preview \
-            --header '  Enter=launch · e=edit · r=rename · d=delete · Esc cancel' \
-            --bind "e:become(echo 'EDIT::{}'),r:become(echo 'RENAME::{}'),d:become(echo 'DELETE::{}')" \
+            --with-nth '2..' \
+            --delimiter ' ' \
+            --header '  Enter to select · Esc cancel' \
             2>/dev/tty
     ) || { print -- '__back__'; return 0; }
 
-    # Parse the result.
-    local prefix body slug_raw action_verb
+    [[ -z "${raw_pick}" ]] && { print -- '__back__'; return 0; }
 
-    if [[ "${result}" == EDIT::* || "${result}" == RENAME::* || "${result}" == DELETE::* ]]; then
-        prefix="${result%%::*}"
-        body="${result#*::}"
-        action_verb="${prefix:l}"
-    else
-        prefix='LAUNCH'
-        body="${result}"
-        action_verb='launch'
-    fi
+    # ── Decode first token ──────────────────────────────────────────────────
 
-    case "${body}" in
-        '➕'*) print -- '__create__'; return 0 ;;
-        '📥'*) print -- '__import__'; return 0 ;;
-        '📤'*) print -- '__export__'; return 0 ;;
-        '⬅'*)  print -- '__back__';  return 0 ;;
-        '──'*) print -- '__back__';  return 0 ;;
+    local first_token="${raw_pick%%[[:space:]]*}"
+    local tag="${first_token%%:*}"
+    local payload="${first_token#*:}"
+
+    case "${tag}" in
+        ACTION)
+            print -- "${payload}"
+            return 0
+            ;;
+        PRESET)
+            # Step 2: ask what to do with this preset.
+            local slug="${payload}"
+            local action_pick
+            action_pick=$(
+                printf '%s\n%s\n%s\n%s\n' \
+                    "launch  ▶  Launch this preset" \
+                    "edit    ✏  Edit provider order" \
+                    "rename  📝  Rename" \
+                    "delete  🗑  Delete" \
+                | fzf \
+                    --prompt "  Action › " \
+                    --height '~25%' \
+                    --layout reverse \
+                    --border rounded \
+                    --no-preview \
+                    --with-nth '2..' \
+                    --delimiter ' ' \
+                    --header '  Esc to go back' \
+                    2>/dev/tty
+            ) || { print -- '__back__'; return 0; }
+
+            local action_verb="${action_pick%%[[:space:]]*}"
+            [[ -z "${action_verb}" ]] && { print -- '__back__'; return 0; }
+            print -- "${action_verb}:${slug}"
+            return 0
+            ;;
+        *)
+            # Separator line or unexpected — treat as back.
+            print -- '__back__'
+            return 0
+            ;;
     esac
-
-    # Extract slug from "Name  [summary]  ::slug::ACTUAL_SLUG".
-    if [[ "${body}" == *'::slug::'* ]]; then
-        slug_raw="${body##*::slug::}"
-        print -- "${action_verb}:${slug_raw}"
-    else
-        print -- '__back__'
-    fi
 }
 
 # Displays a preset list and prompts for an action.
@@ -625,21 +615,17 @@ show_preset_menu() {
 
 # ── Provider intelligence table display ───────────────────────────────────────
 
-# Show the intelligence table before provider selection.
-# Accepts the intel JSON array and an optional sort field.
-# Handles missing fields gracefully (shows N/A).
 show_provider_intelligence() {
     local intel_arr="${1:-[]}"
     local sort_field="${2:-}"
 
     local count
-    count=$(print -- "${intel_arr}" | jq 'length')
+    count=$(print -- "${intel_arr}" | jq 'length' 2>/dev/null || print 0)
     (( count == 0 )) && return 0
 
     print '' >&2
     print '  ── Provider Intelligence (from cached metadata) ─────────────' >&2
     provider_intel_table "${intel_arr}" "${sort_field}" >&2
-    print '  Sort: s=cost  l=latency  u=uptime  t=throughput  n=name' >&2
     print '' >&2
 }
 
