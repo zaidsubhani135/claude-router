@@ -1,6 +1,23 @@
 #!/usr/bin/env zsh
 # ui.zsh — every prompt and display element
 # No networking.  No preset building.  No cache logic.
+#
+# fzf is used when available.  When absent, all menus fall back to the
+# original numbered-list implementation so the router remains fully functional
+# on minimal environments (Chromebook/Crostini, plain SSH sessions, etc.).
+
+# ── fzf detection ─────────────────────────────────────────────────────────────
+
+_ui_has_fzf() {
+    command -v fzf > /dev/null 2>&1
+}
+
+_UI_FZF_WARNED=0
+_ui_warn_no_fzf() {
+    (( _UI_FZF_WARNED )) && return
+    _UI_FZF_WARNED=1
+    warn "fzf not found — using numbered menus. Install fzf for the enhanced UI."
+}
 
 # ── Header ────────────────────────────────────────────────────────────────────
 
@@ -15,6 +32,37 @@ print_header() {
 }
 
 # ── Model picker ──────────────────────────────────────────────────────────────
+
+_ui_fzf_model_selection() {
+    local -a models=("${@}")
+
+    local fzf_input=""
+    local m
+    for m in "${models[@]}"; do
+        fzf_input+="${m}"$'\n'
+    done
+    fzf_input+="+ Add custom model…"$'\n'
+    fzf_input+="⚙ Manage saved models…"
+
+    local result
+    result=$(
+        print -- "${fzf_input}" \
+        | fzf \
+            --prompt '  Model › ' \
+            --height '~40%' \
+            --layout reverse \
+            --border rounded \
+            --no-preview \
+            --header '  ↑↓ navigate · Enter select · / search · Esc cancel' \
+            2>/dev/tty
+    ) || return 1
+
+    case "${result}" in
+        '+ Add custom model…') print -- '__custom__' ;;
+        '⚙ Manage saved models…') print -- '__manage__' ;;
+        *) print -- "${result}" ;;
+    esac
+}
 
 show_model_list() {
     local -a models=("${@}")
@@ -35,6 +83,14 @@ show_model_list() {
 # Prints a model string | "__custom__" | "__manage__"
 prompt_model_selection() {
     local -a models=("${@}")
+
+    if _ui_has_fzf; then
+        _ui_fzf_model_selection "${models[@]}"
+        return $?
+    fi
+
+    _ui_warn_no_fzf
+
     local total="${#models[@]}"
     local input
 
@@ -77,9 +133,55 @@ prompt_save_model() {
 
 # ── Saved model manager ───────────────────────────────────────────────────────
 
+_ui_fzf_manage_menu() {
+    local -a models=("${@}")
+    local total="${#models[@]}"
+
+    if (( total == 0 )); then
+        print '' >&2
+        print '  No saved models. Press any key to go back.' >&2
+        read -rk1 >&2
+        print -- '__back__'
+        return 0
+    fi
+
+    local fzf_input=""
+    local m
+    for m in "${models[@]}"; do
+        fzf_input+="${m}"$'\n'
+    done
+    fzf_input+="← Back"
+
+    local result
+    result=$(
+        print -- "${fzf_input}" \
+        | fzf \
+            --prompt '  Delete saved model › ' \
+            --height '~30%' \
+            --layout reverse \
+            --border rounded \
+            --no-preview \
+            --header '  Select a model to DELETE it · Esc / Back to return' \
+            2>/dev/tty
+    ) || { print -- '__back__'; return 0; }
+
+    [[ "${result}" == '← Back' || -z "${result}" ]] \
+        && { print -- '__back__'; return 0; }
+
+    print -- "${result}"
+}
+
 # Prints a model string to delete | "__back__"
 show_manage_menu() {
     local -a models=("${@}")
+
+    if _ui_has_fzf; then
+        _ui_fzf_manage_menu "${models[@]}"
+        return $?
+    fi
+
+    _ui_warn_no_fzf
+
     local total="${#models[@]}"
     local input
 
@@ -126,8 +228,38 @@ show_manage_menu() {
 
 # ── Routing mode ──────────────────────────────────────────────────────────────
 
+_ui_fzf_routing_mode() {
+    local result
+    result=$(
+        printf '%s\n%s\n' \
+            '🚀  Direct  — export model directly, no routing' \
+            '🎯  Preset  — provider ordering + OpenRouter preset' \
+        | fzf \
+            --prompt '  Launch mode › ' \
+            --height '~20%' \
+            --layout reverse \
+            --border rounded \
+            --no-preview \
+            --header '  Enter to select · Esc cancel' \
+            2>/dev/tty
+    ) || return 1
+
+    case "${result}" in
+        🚀*) print -- 'direct' ;;
+        🎯*) print -- 'preset' ;;
+        *)   return 1 ;;
+    esac
+}
+
 # Prints "direct" or "preset"
 prompt_routing_mode() {
+    if _ui_has_fzf; then
+        _ui_fzf_routing_mode
+        return $?
+    fi
+
+    _ui_warn_no_fzf
+
     local input
     print '' >&2
     print '  Launch mode' >&2
@@ -147,7 +279,7 @@ prompt_routing_mode() {
     done
 }
 
-# ── Provider table ────────────────────────────────────────────────────────────
+# ── Provider table (plain display) ────────────────────────────────────────────
 
 show_provider_table() {
     local -a providers=("${@}")
@@ -161,9 +293,78 @@ show_provider_table() {
     print '' >&2
 }
 
+# ── Provider ordering (fzf multi-select) ─────────────────────────────────────
+
+# Build provider fzf input lines from intel array.
+# Falls back to bare provider names when intel is empty.
+_ui_build_provider_lines() {
+    local -a providers=("${@}")
+    local intel_arr="${_ROUTER_PROVIDER_INTEL:-[]}"
+    local p obj line
+    for p in "${providers[@]}"; do
+        obj=$(print -- "${intel_arr}" | jq -c --arg n "${p}" '.[] | select(.provider_name == $n)' 2>/dev/null)
+        if [[ -n "${obj}" && "${obj}" != 'null' ]]; then
+            line=$(provider_intel_fzf_line "${obj}")
+        else
+            line="${p}"
+        fi
+        print -- "${line}"
+    done
+}
+
+_ui_fzf_provider_order() {
+    local -a providers=("${@}")
+
+    # Write provider lines to a temp file so fzf --bind reload can read them.
+    local tmplines
+    tmplines=$(mktemp) || { warn "Cannot create temp file."; return 1; }
+    _ui_build_provider_lines "${providers[@]}" > "${tmplines}"
+
+    print '' >&2
+    print '  ── Provider Selection ──────────────────────────────────────' >&2
+    print '  TAB to select · Enter to confirm · Esc to cancel' >&2
+    print '  (Select in your desired priority order)' >&2
+    print '' >&2
+
+    local selected_lines
+    selected_lines=$(
+        fzf \
+            --prompt '  Providers › ' \
+            --multi \
+            --height '~60%' \
+            --layout reverse \
+            --border rounded \
+            --no-preview \
+            --header '  TAB select · ↑↓ navigate · Enter confirm · Esc cancel' \
+            < "${tmplines}" \
+            2>/dev/tty
+    )
+    local rc=$?
+    rm -f "${tmplines}"
+
+    (( rc != 0 )) && return 1
+    [[ -z "${selected_lines}" ]] && { warn "No providers selected."; return 1; }
+
+    # Extract the provider name: the first whitespace-delimited token on each line.
+    local line pname
+    while IFS= read -r line; do
+        [[ -z "${line}" ]] && continue
+        pname="${line%%[[:space:]]*}"
+        [[ -n "${pname}" ]] && print -- "${pname}"
+    done <<< "${selected_lines}"
+}
+
 # Prints ordered provider names (newline-separated) to stdout.
 prompt_provider_order() {
     local -a providers=("${@}")
+
+    if _ui_has_fzf; then
+        _ui_fzf_provider_order "${providers[@]}"
+        return $?
+    fi
+
+    _ui_warn_no_fzf
+
     local total="${#providers[@]}"
     local input
 
@@ -185,11 +386,10 @@ prompt_provider_order() {
         done
         (( valid )) || continue
 
-        # Reject duplicates — a provider must not appear more than once.
         local -A seen
         for t in "${tokens[@]}"; do
             if (( ${+seen[$t]} )); then
-                warn "Index \"${t}\" appears more than once. Each provider may only be selected once."
+                warn "Index \"${t}\" appears more than once."
                 valid=0
                 break
             fi
@@ -204,40 +404,133 @@ prompt_provider_order() {
     done
 }
 
-# ── Preset manager UI ─────────────────────────────────────────────────────────
+# ── Preset menu (fzf unified) ─────────────────────────────────────────────────
 
-# Display the preset list for a model and prompt for an action.
-# Presets argument is a JSON array from local metadata.
-# Prints a composite result to stdout: "<action>:<slug>" or a sentinel.
-#   __create__  → create new preset
-#   __import__  → import backup
-#   __export__  → export backup
-#   __back__    → back to model selection
-#   launch:<slug>
-#   edit:<slug>
-#   rename:<slug>
-#   delete:<slug>
+# fzf preset menu.
+# Action is encoded as a TWO-STEP interaction:
+#   Step 1 — fzf picks an item; always outputs: "ACTION SLUG_OR_SENTINEL"
+#   Step 2 — for presets, a second fzf asks what to do (launch/edit/rename/delete)
+# This avoids --bind become (requires fzf >=0.36) and quoting issues entirely.
+_ui_fzf_preset_menu() {
+    local model="${1:?_ui_fzf_preset_menu requires a model}"
+    local presets_json="${2:?_ui_fzf_preset_menu requires presets JSON}"
+
+    local total
+    total=$(print -- "${presets_json}" | jq 'length')
+
+    # ── Build input list ────────────────────────────────────────────────────
+
+    # Actions section (always present)
+    local fzf_input
+    fzf_input="ACTION:__create__  ➕  Create new preset"$'\n'
+    fzf_input+="ACTION:__import__  📥  Import backup"$'\n'
+    fzf_input+="ACTION:__export__  📤  Export backup"$'\n'
+    fzf_input+="ACTION:__back__    ⬅   Back to model selection"
+
+    if (( total > 0 )); then
+        fzf_input+=$'\n'"────────────────────────────────────────────"
+        local i name slug summary
+        for (( i = 0; i < total; i++ )); do
+            name=$(print -- "${presets_json}" | jq -r ".[$i].name")
+            slug=$(print -- "${presets_json}" | jq -r ".[$i].slug")
+            summary=$(print -- "${presets_json}" | jq -r \
+                --argjson idx "${i}" \
+                '.[$idx].providers | map(.provider) | join(" → ")')
+            fzf_input+=$'\n'"PRESET:${slug}  ⚡ ${name}  [${summary}]"
+        done
+    fi
+
+    # ── Step 1: pick item ───────────────────────────────────────────────────
+
+    local raw_pick
+    raw_pick=$(
+        print -- "${fzf_input}" \
+        | fzf \
+            --prompt "  Presets › " \
+            --height '~50%' \
+            --layout reverse \
+            --border rounded \
+            --no-preview \
+            --with-nth '2..' \
+            --delimiter ' ' \
+            --header '  Enter to select · Esc cancel' \
+            2>/dev/tty
+    ) || { print -- '__back__'; return 0; }
+
+    [[ -z "${raw_pick}" ]] && { print -- '__back__'; return 0; }
+
+    # ── Decode first token ──────────────────────────────────────────────────
+
+    local first_token="${raw_pick%%[[:space:]]*}"
+    local tag="${first_token%%:*}"
+    local payload="${first_token#*:}"
+
+    case "${tag}" in
+        ACTION)
+            print -- "${payload}"
+            return 0
+            ;;
+        PRESET)
+            # Step 2: ask what to do with this preset.
+            local slug="${payload}"
+            local action_pick
+            action_pick=$(
+                printf '%s\n%s\n%s\n%s\n' \
+                    "launch  ▶  Launch this preset" \
+                    "edit    ✏  Edit provider order" \
+                    "rename  📝  Rename" \
+                    "delete  🗑  Delete" \
+                | fzf \
+                    --prompt "  Action › " \
+                    --height '~25%' \
+                    --layout reverse \
+                    --border rounded \
+                    --no-preview \
+                    --with-nth '2..' \
+                    --delimiter ' ' \
+                    --header '  Esc to go back' \
+                    2>/dev/tty
+            ) || { print -- '__back__'; return 0; }
+
+            local action_verb="${action_pick%%[[:space:]]*}"
+            [[ -z "${action_verb}" ]] && { print -- '__back__'; return 0; }
+            print -- "${action_verb}:${slug}"
+            return 0
+            ;;
+        *)
+            # Separator line or unexpected — treat as back.
+            print -- '__back__'
+            return 0
+            ;;
+    esac
+}
+
+# Displays a preset list and prompts for an action.
+# Composite result to stdout: "<action>:<slug>" or a sentinel.
 show_preset_menu() {
     local model="${1:?show_preset_menu requires a model}"
     local presets_json="${2:?show_preset_menu requires a presets JSON array}"
 
-    # Determine the number of presets without relying on (@f) empty-string artefact.
-    # jq outputs nothing (not "null") when iterating an empty array with .[].field.
+    if _ui_has_fzf; then
+        _ui_fzf_preset_menu "${model}" "${presets_json}"
+        return $?
+    fi
+
+    _ui_warn_no_fzf
+
+    # ── Numbered-list fallback (original implementation) ──────────────────────
     local total
     total=$(print -- "${presets_json}" | jq 'length')
 
-    # Parse names and slugs only when there is something to parse.
     local -a names slugs
     if (( total > 0 )); then
         names=( "${(@f)$(print -- "${presets_json}" | jq -r '.[].name')}" )
         slugs=( "${(@f)$(print -- "${presets_json}" | jq -r '.[].slug')}" )
     fi
 
-    # Hoist idx to avoid repeated local declarations inside case arms.
-    local idx input
-    local summary=""
+    local idx input summary=""
     local i
-    
+
     while true; do
         print '' >&2
         printf '  🎯 Presets for\n\n  %s\n\n' "${model}" >&2
@@ -280,68 +573,64 @@ show_preset_menu() {
             x)   print -- '__export__'; return 0 ;;
             b)   print -- '__back__';   return 0 ;;
 
-            # Direct launch by number: "1", "2", …
             <1->)
-                if (( total == 0 )); then
-                    warn "No presets yet. Create one with '+'."
-                    continue
-                fi
+                if (( total == 0 )); then warn "No presets yet. Create one with '+'."; continue; fi
                 if (( input >= 1 && input <= total )); then
-                    print -- "launch:${slugs[input]}"
-                    return 0
+                    print -- "launch:${slugs[input]}"; return 0
                 fi
                 warn "Invalid number. Choose 1–${total}."
                 ;;
 
             e<1->)
-                if (( total == 0 )); then
-                    warn "No presets yet. Create one with '+'."
-                    continue
-                fi
+                if (( total == 0 )); then warn "No presets yet."; continue; fi
                 idx="${input#e}"
                 if (( idx >= 1 && idx <= total )); then
-                    print -- "edit:${slugs[idx]}"
-                    return 0
+                    print -- "edit:${slugs[idx]}"; return 0
                 fi
                 warn "Invalid index. Use e1–e${total}."
                 ;;
 
             r<1->)
-                if (( total == 0 )); then
-                    warn "No presets yet. Create one with '+'."
-                    continue
-                fi
+                if (( total == 0 )); then warn "No presets yet."; continue; fi
                 idx="${input#r}"
                 if (( idx >= 1 && idx <= total )); then
-                    print -- "rename:${slugs[idx]}"
-                    return 0
+                    print -- "rename:${slugs[idx]}"; return 0
                 fi
                 warn "Invalid index. Use r1–r${total}."
                 ;;
 
             d<1->)
-                if (( total == 0 )); then
-                    warn "No presets yet. Create one with '+'."
-                    continue
-                fi
+                if (( total == 0 )); then warn "No presets yet."; continue; fi
                 idx="${input#d}"
                 if (( idx >= 1 && idx <= total )); then
-                    print -- "delete:${slugs[idx]}"
-                    return 0
+                    print -- "delete:${slugs[idx]}"; return 0
                 fi
                 warn "Invalid index. Use d1–d${total}."
                 ;;
 
-            *)
-                warn "Unknown command. See options above."
-                ;;
+            *) warn "Unknown command. See options above." ;;
         esac
     done
 }
 
-# Prompt for a preset name, with an optional default.
-# Usage: prompt_preset_name [default-name]
-# Prints the entered name (or the default) to stdout.
+# ── Provider intelligence table display ───────────────────────────────────────
+
+show_provider_intelligence() {
+    local intel_arr="${1:-[]}"
+    local sort_field="${2:-}"
+
+    local count
+    count=$(print -- "${intel_arr}" | jq 'length' 2>/dev/null || print 0)
+    (( count == 0 )) && return 0
+
+    print '' >&2
+    print '  ── Provider Intelligence (from cached metadata) ─────────────' >&2
+    provider_intel_table "${intel_arr}" "${sort_field}" >&2
+    print '' >&2
+}
+
+# ── Preset name / rename / delete prompts ─────────────────────────────────────
+
 prompt_preset_name() {
     local default="${1:-}"
     local input
@@ -358,8 +647,6 @@ prompt_preset_name() {
     fi
 }
 
-# Prompt for a new name during rename.
-# Prints "confirmed:<new-name>" or "__cancel__"
 prompt_rename_preset() {
     local current="${1:?prompt_rename_preset requires current name}"
     local new_name input
@@ -381,8 +668,6 @@ prompt_rename_preset() {
     fi
 }
 
-# Prompt for confirmation before deleting a preset.
-# Returns 0 for yes, 1 for no.
 prompt_delete_preset() {
     local name="${1:?prompt_delete_preset requires name}"
     local model="${2:?prompt_delete_preset requires model}"
@@ -404,6 +689,27 @@ prompt_import_file() {
 }
 
 prompt_import_mode() {
+    if _ui_has_fzf; then
+        local result
+        result=$(
+            printf '%s\n%s\n' \
+                'merge   — keep existing, add imported' \
+                'replace — overwrite all existing data' \
+            | fzf \
+                --prompt '  Import mode › ' \
+                --height '~20%' \
+                --layout reverse \
+                --border rounded \
+                --no-preview \
+                2>/dev/tty
+        ) || return 1
+        case "${result}" in
+            merge*)   print -- 'merge';   return 0 ;;
+            replace*) print -- 'replace'; return 0 ;;
+        esac
+    fi
+
+    _ui_warn_no_fzf
     local input
     print '' >&2
     print '  Import mode' >&2
