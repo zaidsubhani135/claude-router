@@ -22,6 +22,14 @@ PRESETS_DIR="${CONFIG_DIR}/presets"
 PRESET_PREFIX="claude"
 OPENROUTER_API="https://openrouter.ai/api/v1"
 
+# ── Default models ────────────────────────────────────────────────────────────
+
+if (( ! ${+CLAUDE_ROUTER_DEFAULT_MODELS} )); then
+  typeset -ga CLAUDE_ROUTER_DEFAULT_MODELS=(
+    "openrouter/free"
+  )
+fi
+
 # ── Backup ────────────────────────────────────────────────────────────────────
 
 BACKUP_SCHEMA_VERSION="1"

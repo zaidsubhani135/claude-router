@@ -4,7 +4,7 @@
 #
 # fzf is used when available.  When absent, all menus fall back to the
 # original numbered-list implementation so the router remains fully functional
-# on minimal environments (Chromebook/Crostini, plain SSH sessions, etc.).
+# on Chromebook/Crostini, plain SSH sessions, and minimal environments.
 
 # ── fzf detection ─────────────────────────────────────────────────────────────
 
@@ -245,9 +245,9 @@ _ui_fzf_routing_mode() {
     ) || return 1
 
     case "${result}" in
-        🚀*) print -- 'direct' ;;
-        🎯*) print -- 'preset' ;;
-        *)   return 1 ;;
+        '🚀'*) print -- 'direct' ;;
+        '🎯'*) print -- 'preset' ;;
+        *)     return 1 ;;
     esac
 }
 
@@ -279,7 +279,21 @@ prompt_routing_mode() {
     done
 }
 
-# ── Provider table (plain display) ────────────────────────────────────────────
+# ── Provider intelligence table display ───────────────────────────────────────
+
+show_provider_intelligence() {
+    local intel_arr="${1:-[]}"
+
+    local count
+    count=$(print -- "${intel_arr}" | jq 'length' 2>/dev/null || print 0)
+    (( count == 0 )) && return 0
+
+    print '' >&2
+    print '  ── Provider Intelligence (cached metadata) ──────────────────' >&2
+    provider_intel_table "${intel_arr}" >&2
+}
+
+# ── Provider table (plain numbered display) ───────────────────────────────────
 
 show_provider_table() {
     local -a providers=("${@}")
@@ -293,37 +307,55 @@ show_provider_table() {
     print '' >&2
 }
 
-# ── Provider ordering (fzf multi-select) ─────────────────────────────────────
-
-# Build provider fzf input lines from intel array.
-# Falls back to bare provider names when intel is empty.
-_ui_build_provider_lines() {
-    local -a providers=("${@}")
-    local intel_arr="${_ROUTER_PROVIDER_INTEL:-[]}"
-    local p obj line
-    for p in "${providers[@]}"; do
-        obj=$(print -- "${intel_arr}" | jq -c --arg n "${p}" '.[] | select(.provider_name == $n)' 2>/dev/null)
-        if [[ -n "${obj}" && "${obj}" != 'null' ]]; then
-            line=$(provider_intel_fzf_line "${obj}")
-        else
-            line="${p}"
-        fi
-        print -- "${line}"
-    done
-}
+# ── Provider ordering (fzf multi-select with live sort) ───────────────────────
+#
+# Sort is implemented by writing pre-sorted temp files and using fzf --bind
+# to reload from the appropriate file.  This approach:
+#   - Works on all fzf versions (reload action available since fzf 0.21, 2020)
+#   - Requires no shell quoting inside --bind arguments
+#   - Is fully non-destructive: sorted files are temp, original array unchanged
 
 _ui_fzf_provider_order() {
     local -a providers=("${@}")
+    local intel_arr="${_ROUTER_PROVIDER_INTEL:-[]}"
 
-    # Write provider lines to a temp file so fzf --bind reload can read them.
-    local tmplines
-    tmplines=$(mktemp) || { warn "Cannot create temp file."; return 1; }
-    _ui_build_provider_lines "${providers[@]}" > "${tmplines}"
+    # Write one temp file per sort order.
+    local tmp_name tmp_cost tmp_lat tmp_up tmp_tp
+    tmp_name=$(mktemp) || { warn "Cannot create temp file."; return 1; }
+    tmp_cost=$(mktemp) || { rm -f "${tmp_name}"; warn "Cannot create temp file."; return 1; }
+    tmp_lat=$(mktemp)  || { rm -f "${tmp_name}" "${tmp_cost}"; warn "Cannot create temp file."; return 1; }
+    tmp_up=$(mktemp)   || { rm -f "${tmp_name}" "${tmp_cost}" "${tmp_lat}"; warn "Cannot create temp file."; return 1; }
+    tmp_tp=$(mktemp)   || { rm -f "${tmp_name}" "${tmp_cost}" "${tmp_lat}" "${tmp_up}"; warn "Cannot create temp file."; return 1; }
+
+    # Populate all sort files.  Falls back to provider name only when no intel.
+    local has_intel=0
+    local count
+    count=$(print -- "${intel_arr}" | jq 'length' 2>/dev/null || print 0)
+    (( count > 0 )) && has_intel=1
+
+    if (( has_intel )); then
+        provider_intel_write_sorted "${tmp_name}" "${intel_arr}" "name"
+        provider_intel_write_sorted "${tmp_cost}" "${intel_arr}" "cost"
+        provider_intel_write_sorted "${tmp_lat}"  "${intel_arr}" "latency"
+        provider_intel_write_sorted "${tmp_up}"   "${intel_arr}" "uptime"
+        provider_intel_write_sorted "${tmp_tp}"   "${intel_arr}" "throughput"
+    else
+        # No intel — write bare provider names to all files (same content).
+        local p
+        for p in "${providers[@]}"; do
+            print -- "${p}"
+        done > "${tmp_name}"
+        cp "${tmp_name}" "${tmp_cost}"
+        cp "${tmp_name}" "${tmp_lat}"
+        cp "${tmp_name}" "${tmp_up}"
+        cp "${tmp_name}" "${tmp_tp}"
+    fi
 
     print '' >&2
     print '  ── Provider Selection ──────────────────────────────────────' >&2
     print '  TAB to select · Enter to confirm · Esc to cancel' >&2
-    print '  (Select in your desired priority order)' >&2
+    print '  Sort: s=cost  l=latency  u=uptime  t=throughput  n=name' >&2
+    print '  Select in your desired priority order (first = highest priority)' >&2
     print '' >&2
 
     local selected_lines
@@ -335,17 +367,24 @@ _ui_fzf_provider_order() {
             --layout reverse \
             --border rounded \
             --no-preview \
-            --header '  TAB select · ↑↓ navigate · Enter confirm · Esc cancel' \
-            < "${tmplines}" \
+            --header '  TAB select · ↑↓ navigate · s/l/u/t/n sort · Enter confirm' \
+            --bind "s:reload(cat ${tmp_cost})" \
+            --bind "l:reload(cat ${tmp_lat})" \
+            --bind "u:reload(cat ${tmp_up})" \
+            --bind "t:reload(cat ${tmp_tp})" \
+            --bind "n:reload(cat ${tmp_name})" \
+            < "${tmp_name}" \
             2>/dev/tty
     )
     local rc=$?
-    rm -f "${tmplines}"
+    rm -f "${tmp_name}" "${tmp_cost}" "${tmp_lat}" "${tmp_up}" "${tmp_tp}"
 
     (( rc != 0 )) && return 1
     [[ -z "${selected_lines}" ]] && { warn "No providers selected."; return 1; }
 
-    # Extract the provider name: the first whitespace-delimited token on each line.
+    # Extract provider name: first whitespace-delimited token on each line.
+    # provider_intel_fzf_line guarantees the name is the first token with no
+    # embedded spaces (OpenRouter provider names never contain spaces).
     local line pname
     while IFS= read -r line; do
         [[ -z "${line}" ]] && continue
@@ -404,13 +443,13 @@ prompt_provider_order() {
     done
 }
 
-# ── Preset menu (fzf unified) ─────────────────────────────────────────────────
+# ── Preset menu (fzf unified, two-step) ──────────────────────────────────────
+#
+# Two-step design avoids --bind become (fzf >=0.36 only) and all inline
+# shell quoting inside fzf arguments:
+#   Step 1 — pick an item; tag prefix encodes type (ACTION: or PRESET:)
+#   Step 2 — for presets, a second small fzf picks the action verb
 
-# fzf preset menu.
-# Action is encoded as a TWO-STEP interaction:
-#   Step 1 — fzf picks an item; always outputs: "ACTION SLUG_OR_SENTINEL"
-#   Step 2 — for presets, a second fzf asks what to do (launch/edit/rename/delete)
-# This avoids --bind become (requires fzf >=0.36) and quoting issues entirely.
 _ui_fzf_preset_menu() {
     local model="${1:?_ui_fzf_preset_menu requires a model}"
     local presets_json="${2:?_ui_fzf_preset_menu requires presets JSON}"
@@ -418,9 +457,7 @@ _ui_fzf_preset_menu() {
     local total
     total=$(print -- "${presets_json}" | jq 'length')
 
-    # ── Build input list ────────────────────────────────────────────────────
-
-    # Actions section (always present)
+    # Build input: tagged lines so first token carries type:payload.
     local fzf_input
     fzf_input="ACTION:__create__  ➕  Create new preset"$'\n'
     fzf_input+="ACTION:__import__  📥  Import backup"$'\n'
@@ -428,7 +465,7 @@ _ui_fzf_preset_menu() {
     fzf_input+="ACTION:__back__    ⬅   Back to model selection"
 
     if (( total > 0 )); then
-        fzf_input+=$'\n'"────────────────────────────────────────────"
+        fzf_input+=$'\n'"SEP:------  ────────────────────────────────────────"
         local i name slug summary
         for (( i = 0; i < total; i++ )); do
             name=$(print -- "${presets_json}" | jq -r ".[$i].name")
@@ -440,8 +477,7 @@ _ui_fzf_preset_menu() {
         done
     fi
 
-    # ── Step 1: pick item ───────────────────────────────────────────────────
-
+    # Step 1: pick item. --with-nth hides the tag prefix from display.
     local raw_pick
     raw_pick=$(
         print -- "${fzf_input}" \
@@ -459,8 +495,7 @@ _ui_fzf_preset_menu() {
 
     [[ -z "${raw_pick}" ]] && { print -- '__back__'; return 0; }
 
-    # ── Decode first token ──────────────────────────────────────────────────
-
+    # Decode the tag prefix (first space-delimited token of the raw line).
     local first_token="${raw_pick%%[[:space:]]*}"
     local tag="${first_token%%:*}"
     local payload="${first_token#*:}"
@@ -471,10 +506,10 @@ _ui_fzf_preset_menu() {
             return 0
             ;;
         PRESET)
-            # Step 2: ask what to do with this preset.
+            # Step 2: pick action for this preset.
             local slug="${payload}"
-            local action_pick
-            action_pick=$(
+            local action_line
+            action_line=$(
                 printf '%s\n%s\n%s\n%s\n' \
                     "launch  ▶  Launch this preset" \
                     "edit    ✏  Edit provider order" \
@@ -492,13 +527,12 @@ _ui_fzf_preset_menu() {
                     2>/dev/tty
             ) || { print -- '__back__'; return 0; }
 
-            local action_verb="${action_pick%%[[:space:]]*}"
-            [[ -z "${action_verb}" ]] && { print -- '__back__'; return 0; }
-            print -- "${action_verb}:${slug}"
+            local verb="${action_line%%[[:space:]]*}"
+            [[ -z "${verb}" ]] && { print -- '__back__'; return 0; }
+            print -- "${verb}:${slug}"
             return 0
             ;;
-        *)
-            # Separator line or unexpected — treat as back.
+        SEP|*)
             print -- '__back__'
             return 0
             ;;
@@ -506,7 +540,8 @@ _ui_fzf_preset_menu() {
 }
 
 # Displays a preset list and prompts for an action.
-# Composite result to stdout: "<action>:<slug>" or a sentinel.
+# Prints: "launch:<slug>" | "edit:<slug>" | "rename:<slug>" | "delete:<slug>"
+#       | "__create__" | "__import__" | "__export__" | "__back__"
 show_preset_menu() {
     local model="${1:?show_preset_menu requires a model}"
     local presets_json="${2:?show_preset_menu requires a presets JSON array}"
@@ -518,7 +553,7 @@ show_preset_menu() {
 
     _ui_warn_no_fzf
 
-    # ── Numbered-list fallback (original implementation) ──────────────────────
+    # ── Numbered-list fallback (original implementation, unchanged) ────────────
     local total
     total=$(print -- "${presets_json}" | jq 'length')
 
@@ -611,22 +646,6 @@ show_preset_menu() {
             *) warn "Unknown command. See options above." ;;
         esac
     done
-}
-
-# ── Provider intelligence table display ───────────────────────────────────────
-
-show_provider_intelligence() {
-    local intel_arr="${1:-[]}"
-    local sort_field="${2:-}"
-
-    local count
-    count=$(print -- "${intel_arr}" | jq 'length' 2>/dev/null || print 0)
-    (( count == 0 )) && return 0
-
-    print '' >&2
-    print '  ── Provider Intelligence (from cached metadata) ─────────────' >&2
-    provider_intel_table "${intel_arr}" "${sort_field}" >&2
-    print '' >&2
 }
 
 # ── Preset name / rename / delete prompts ─────────────────────────────────────
