@@ -4,7 +4,9 @@ A model router for [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 
 ## What it does
 
-Instead of hardcoding a model, you choose one at launch time and optionally configure which providers serve it and in what priority order. Your configuration is saved locally and restored automatically on the next launch.
+`cr` (in `launchers/`) is the active, primary entrypoint. Instead of hardcoding a model, you choose one at launch time and optionally configure which providers serve it and in what priority order. Your configuration is saved locally and restored automatically on the next launch.
+
+`braining` and `superpowers`, in `extras/launchers/`, are inactive example launchers that layer workflow-specific behavior (default model lists, Claude Code env vars) on top of the same router. Only launchers inside `launchers/` are active — copy or move an example in to activate it. You can also write your own launcher in a few lines — see [Launcher contract](#launcher-contract) below — without touching anything under `router/`.
 
 ```
 Select model  (fzf picker with metadata preview)
@@ -38,22 +40,29 @@ Clone or copy the repository anywhere on your system:
 git clone https://github.com/zaidsubhani135/claude-router ~/.local/share/claude-router
 ```
 
-Add the launchers to your PATH or source them from your shell config:
+Run `cr`, the active launcher, directly, or put it on your `PATH`:
+
+```zsh
+~/.local/share/claude-router/launchers/cr
+# or
+ln -s ~/.local/share/claude-router/launchers/cr ~/.local/bin/cr
+```
+
+`cr` requires no setup beyond the environment variables below — it picks a model, runs the router, and launches `claude` for you in one step. The `router/` directory must remain a sibling of `launchers/` at the repo root.
+
+Only launchers inside `launchers/` are active. `extras/launchers/` holds inactive examples (`braining`, `superpowers`, `template`) — nothing there runs on its own. To activate one, copy or move it into `launchers/`:
+
+```zsh
+cp ~/.local/share/claude-router/extras/launchers/braining ~/.local/share/claude-router/launchers/braining
+```
+
+`braining` and `superpowers` are meant to be sourced into your shell rather than executed, since `superpowers` undoes env vars `braining` sets in the same session — this is true whether you source them from `extras/launchers/` directly or from an activated copy in `launchers/`:
 
 ```zsh
 # In ~/.zshrc
-source ~/.local/share/claude-router/braining
-source ~/.local/share/claude-router/superpowers
+source ~/.local/share/claude-router/extras/launchers/braining
+source ~/.local/share/claude-router/extras/launchers/superpowers
 ```
-
-Or symlink them:
-
-```zsh
-ln -s ~/.local/share/claude-router/braining ~/.local/bin/braining
-ln -s ~/.local/share/claude-router/superpowers ~/.local/bin/superpowers
-```
-
-The `router/` directory must remain a sibling of the launcher scripts.
 
 ## Configuration
 
@@ -165,11 +174,40 @@ In the provider intelligence table, sort by pressing a key before confirming sel
 
 Sorting affects only the table view. It never modifies stored preset priorities or routing order.
 
+## Launcher contract
+
+A launcher's only job is to pick a model and hand off to the router. The full contract:
+
+1. *(optional)* set `CLAUDE_ROUTER_DEFAULT_MODELS` — a newline-joined list of model ids to offer in the picker. Omit to use the router's built-in default (`openrouter/free`).
+2. Set `CLAUDE_ROUTER_MODEL` — usually `__pick__` to open the interactive picker, or a specific model id to skip it.
+3. Source `router/router_engine.zsh` and call `claude_router`.
+4. On success, `exec claude "$@"` (or a custom invocation, as `braining` does with its slash-command).
+
+Nothing else is required. The router never reads launcher-specific state — only the `CLAUDE_ROUTER_*` and `ANTHROPIC_*` variables documented above — so you can write a new launcher without touching `router/` at all.
+
+**Only launchers inside `launchers/` are active.** `extras/launchers/` holds inactive examples and templates — `braining`, `superpowers`, and [`template`](extras/launchers/template) — that don't run on their own. Activate one by copying or moving it into `launchers/`:
+
+```zsh
+cp extras/launchers/template launchers/my-launcher
+chmod +x launchers/my-launcher
+```
+
+`cr` (in `launchers/`) is this contract with no extras: no default model list, no behavioural overrides, run as a standalone executable. `braining` and `superpowers` (in `extras/launchers/`) add workflow-specific defaults and Claude Code env vars on top, and are meant to be `source`d into your shell rather than executed, since `superpowers` cleans up env vars `braining` may have left behind.
+
 ## Launchers
 
-There are two opinionated launchers and one minimal, mode-agnostic entrypoint.
+There is one active launcher (`launchers/cr`) and a set of inactive examples in `extras/launchers/` that you can copy into `launchers/` to activate.
 
-### `braining`
+### `cr` (`launchers/`, active)
+
+The primary entrypoint. Minimal, direct, and self-contained — applies no default-model list and no behavioural overrides.
+
+- Runs under `set -euo pipefail`
+- Always opens the interactive model picker (`CLAUDE_ROUTER_MODEL=__pick__`)
+- Calls `claude_router` and, on success, `exec claude "$@"` — a complete, runnable launcher with no further setup needed
+- Meant to be executed directly (`./launchers/cr`) or symlinked onto your `PATH`
+
+### `braining` (`extras/launchers/`, inactive example)
 
 Launches Claude in brainstorming mode.
 
@@ -178,8 +216,9 @@ Launches Claude in brainstorming mode.
 - Sets `CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1` and `CLAUDE_CODE_PLAN_MODE_INTERVIEW_PHASE=1`
 - Sets `SUPERPOWERS_MODIFIER`, instructing Claude to act purely as a feature-brainstorming and polishing sparring partner — no code generation, no implementation plans, no TDD tooling. It should pull project context to inform the discussion but keep all output conversational.
 - Launches `claude "/brainstorming"`, or `claude "/brainstorming $*"` if arguments are passed.
+- Meant to be `source`d, since its env vars are intended to persist in your shell session. Works in place from `extras/launchers/`, or copy into `launchers/` first if you want it discoverable as an active launcher (see the path comment inside the file).
 
-### `superpowers`
+### `superpowers` (`extras/launchers/`, inactive example)
 
 Launches Claude in standard, surgical-execution mode with a larger default model list.
 
@@ -187,14 +226,11 @@ Launches Claude in standard, surgical-execution mode with a larger default model
 - Always opens the interactive model picker (`CLAUDE_ROUTER_MODEL=__pick__`)
 - Unsets `CLAUDE_CODE_DISABLE_ADVISOR_TOOL`, `CLAUDE_CODE_PLAN_MODE_INTERVIEW_PHASE`, and `SUPERPOWERS_MODIFIER` — this undoes anything `braining` left behind if you sourced both in the same shell session.
 - Launches `claude "$@"`, passing through any arguments unmodified.
+- Meant to be `source`d, for the same reason as `braining`.
 
-### `cr`
+### `template` (`extras/launchers/`, inactive)
 
-A minimal, direct entrypoint into the router that skips both launchers' default-model lists and behavioural overrides entirely. Useful for quick model switches or for scripting around the router without Claude Code-specific configuration.
-
-- Runs under `set -euo pipefail`
-- Always opens the interactive model picker (`CLAUDE_ROUTER_MODEL=__pick__`)
-- Calls `claude_router "$@"` directly and does **not** itself `exec claude` — it relies on `claude_router`'s direct/preset flow to set `ANTHROPIC_MODEL`, leaving invocation of `claude` to the caller or to whatever sources `cr`.
+A documented skeleton implementing the full launcher contract with nothing else added. Copy it into `launchers/` to start a new launcher without reading anything under `router/`.
 
 ## Backup and restore
 
@@ -219,22 +255,27 @@ python3 router/validate.py   # re-implements and checks the same invariants in P
 ## Architecture
 
 ```
-braining / superpowers / cr   (launchers — model list + Claude behaviour only; cr is minimal)
-    └── router/
-        ├── router_engine.zsh   (orchestrator — sources all modules, defines claude_router())
-        ├── config.zsh          (constants)
-        ├── utils.zsh           (die / warn / info / spinner / sanitize_slug)
-        ├── cache.zsh           (model catalogue cache lifecycle)
-        ├── openrouter.zsh      (REST API — curl wrappers only)
-        ├── preset.zsh          (local metadata I/O + JSON payload builders)
-        ├── provider_intel.zsh  (provider metadata extraction + display)
-        ├── backup.zsh          (export / import)
-        ├── ui.zsh              (all terminal prompts and display; fzf + fallback)
-        ├── validate.zsh        (zsh validation suite, runs against real modules)
-        └── validate.py         (Python re-implementation of the same validation suite)
+launchers/                       (ACTIVE — only launchers here run)
+    └── cr                       (primary entrypoint — no defaults, no overrides)
+extras/launchers/                (INACTIVE — examples and templates only)
+    ├── braining                 (example — default models + Claude behaviour)
+    ├── superpowers               (example — default models, undoes braining's overrides)
+    └── template                  (copy into launchers/ to start a new one)
+router/
+    ├── router_engine.zsh   (orchestrator — sources all modules, defines claude_router())
+    ├── config.zsh          (constants)
+    ├── utils.zsh           (die / warn / info / spinner / sanitize_slug)
+    ├── cache.zsh           (model catalogue cache lifecycle)
+    ├── openrouter.zsh      (REST API — curl wrappers only)
+    ├── preset.zsh          (local metadata I/O + JSON payload builders)
+    ├── provider_intel.zsh  (provider metadata extraction + display)
+    ├── backup.zsh          (export / import)
+    ├── ui.zsh              (all terminal prompts and display; fzf + fallback)
+    ├── validate.zsh        (zsh validation suite, runs against real modules)
+    └── validate.py         (Python re-implementation of the same validation suite)
 ```
 
-Each module has exactly one responsibility. No business logic lives in the launchers. The router is fully independent of which launcher invokes it.
+Each module has exactly one responsibility. No business logic lives in the launchers — they only set environment variables and hand off. The router is fully independent of which launcher invokes it, and reads no launcher-specific state.
 
 ## License
 

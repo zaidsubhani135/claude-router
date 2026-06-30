@@ -1,10 +1,29 @@
 #!/usr/bin/env zsh
-# braining — brainstorming launcher
-# Responsibilities: define default models, configure Claude behaviour,
-#                   export CLAUDE_ROUTER_MODEL, invoke claude_router.
-# The router handles all model validation, routing, caching, and preset work.
+# braining — brainstorming launcher (inactive example, extras/launchers/)
+#
+# Only launchers inside launchers/ are considered active. This file is an
+# example of the sourced-launcher pattern; it works in place via:
+#   source extras/launchers/braining
+# To make it an active, discoverable launcher, copy or move it instead:
+#   cp extras/launchers/braining launchers/braining
+# Path resolution below is self-detecting and requires no edits either way.
+# Sets behavioural env vars that persist in your shell session until
+# `superpowers` (or a manual unset) clears them.
+#
+# Follows the minimal launcher contract (see extras/launchers/template):
+#   1. set CLAUDE_ROUTER_DEFAULT_MODELS
+#   2. set CLAUDE_ROUTER_MODEL
+#   3. source router/router_engine.zsh, call claude_router
+#   4. exec claude (here: a slash-command, not raw passthrough)
+# Everything else (default model list, behavioural env vars) is
+# workflow-specific and owned entirely by this launcher, not the router.
 
-_BRAINING_DIR="${${(%):-%x}:A:h}"
+_THIS="${${(%):-%x}:A}"
+if [[ "${_THIS:h:t}" == 'launchers' && "${_THIS:h:h:t}" == 'extras' ]]; then
+    _BRAINING_DIR="${_THIS:h:h:h}"   # extras/launchers/braining -> repo root
+else
+    _BRAINING_DIR="${_THIS:h:h}"     # launchers/braining        -> repo root
+fi
 
 # ── Default model list ────────────────────────────────────────────────────────
 # One model per line. User additions are managed interactively or stored in
@@ -26,7 +45,7 @@ export CLAUDE_ROUTER_MODEL="__pick__"
 
 # ── Load and run the router ───────────────────────────────────────────────────
 
-source "${_BRAINING_DIR}/router/router_engine.zsh"
+source "${_BRAINING_DIR}/router/router_engine.zsh"  # _BRAINING_DIR = repo root
 claude_router || return 1
 
 # ── Claude behaviour ──────────────────────────────────────────────────────────

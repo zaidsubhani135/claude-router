@@ -1,10 +1,29 @@
 #!/usr/bin/env zsh
-# superpowers — surgical execution launcher
-# Responsibilities: define default models, configure Claude behaviour,
-#                   export CLAUDE_ROUTER_MODEL, invoke claude_router.
-# The router handles all model validation, routing, caching, and preset work.
+# superpowers — surgical execution launcher (inactive example, extras/launchers/)
+#
+# Only launchers inside launchers/ are considered active. This file is an
+# example of the sourced-launcher pattern; it works in place via:
+#   source extras/launchers/superpowers
+# To make it an active, discoverable launcher, copy or move it instead:
+#   cp extras/launchers/superpowers launchers/superpowers
+# Path resolution below is self-detecting and requires no edits either way.
+# It undoes env vars `braining` may have left in the same shell session,
+# which only works if both run in the same shell.
+#
+# Follows the minimal launcher contract (see extras/launchers/template):
+#   1. set CLAUDE_ROUTER_DEFAULT_MODELS
+#   2. set CLAUDE_ROUTER_MODEL
+#   3. source router/router_engine.zsh, call claude_router
+#   4. exec claude "$@"
+# Everything else (the default model list, the env var cleanup) is
+# workflow-specific and owned entirely by this launcher, not the router.
 
-_SUPERPOWERS_DIR="${${(%):-%x}:A:h}"
+_THIS="${${(%):-%x}:A}"
+if [[ "${_THIS:h:t}" == 'launchers' && "${_THIS:h:h:t}" == 'extras' ]]; then
+    _SUPERPOWERS_DIR="${_THIS:h:h:h}"   # extras/launchers/superpowers -> repo root
+else
+    _SUPERPOWERS_DIR="${_THIS:h:h}"     # launchers/superpowers        -> repo root
+fi
 
 # ── Default model list ────────────────────────────────────────────────────────
 
@@ -24,7 +43,7 @@ export CLAUDE_ROUTER_MODEL="__pick__"
 
 # ── Load and run the router ───────────────────────────────────────────────────
 
-source "${_SUPERPOWERS_DIR}/router/router_engine.zsh"
+source "${_SUPERPOWERS_DIR}/router/router_engine.zsh"  # _SUPERPOWERS_DIR = repo root
 claude_router || return 1
 
 # ── Claude behaviour ──────────────────────────────────────────────────────────

@@ -1,0 +1,35 @@
+#!/usr/bin/env zsh
+# cr — the primary, active entrypoint into claude-router.
+#
+# Lives at launchers/cr. Only launchers inside launchers/ are active; the
+# examples in extras/launchers/ (braining, superpowers, template) are
+# inactive — copy or move one into launchers/ to activate it.
+#
+# Minimal launcher contract (see extras/launchers/template for the long form):
+#   1. (optional) set CLAUDE_ROUTER_DEFAULT_MODELS
+#   2. set CLAUDE_ROUTER_MODEL (usually "__pick__")
+#   3. source router/router_engine.zsh and call claude_router
+#   4. on success, exec claude "$@"
+#
+# cr applies no defaults and no behavioural overrides — it is the router's
+# own contract, demonstrated. Any other launcher is free to add workflow
+# flavor on top without touching router internals.
+
+set -euo pipefail
+
+# Resolve repo root regardless of whether this file lives in launchers/ or
+# extras/launchers/ — lets it be copied into launchers/ with zero edits.
+_THIS="${0:A}"
+if [[ "${_THIS:h:t}" == 'launchers' && "${_THIS:h:h:t}" == 'extras' ]]; then
+    REPO_DIR="${_THIS:h:h:h}"   # extras/launchers/cr -> repo root
+else
+    REPO_DIR="${_THIS:h:h}"     # launchers/cr        -> repo root
+fi
+
+source "${REPO_DIR}/router/router_engine.zsh"
+
+export CLAUDE_ROUTER_MODEL="__pick__"
+
+claude_router || exit 1
+
+exec claude "$@"

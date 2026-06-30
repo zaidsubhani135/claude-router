@@ -30,6 +30,15 @@ if (( ! ${+CLAUDE_ROUTER_DEFAULT_MODELS} )); then
   )
 fi
 
+# ── Optional overrides (must default to empty, not unset) ──────────────────────
+# router_engine.zsh checks these with [[ -n "${VAR}" ]] to decide whether to
+# skip an interactive prompt. Under `set -u` (used by cr and any launcher that
+# enables nounset), referencing a genuinely unset variable — even inside
+# [[ -n ]] — aborts the script. Defaulting to "" keeps the -n check meaningful
+# (false → prompt interactively) while being safe under nounset.
+: "${CLAUDE_ROUTER_MODE:=}"
+: "${CLAUDE_ROUTER_PROFILE:=}"
+
 # ── Backup ────────────────────────────────────────────────────────────────────
 
 BACKUP_SCHEMA_VERSION="1"

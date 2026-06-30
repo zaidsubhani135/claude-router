@@ -1,0 +1,53 @@
+#!/usr/bin/env zsh
+# template — minimal launcher skeleton. INACTIVE as-is (it lives in
+# extras/launchers/). To activate it:
+#
+#   cp extras/launchers/template launchers/my-launcher
+#   chmod +x launchers/my-launcher
+#
+# Only launchers inside launchers/ are active. extras/launchers/ holds
+# inactive examples and templates only — nothing there runs on its own.
+# You do not need to read or modify anything under router/.
+#
+# THE CONTRACT (this is the entire job of a launcher):
+#   1. (optional) set CLAUDE_ROUTER_DEFAULT_MODELS — newline-joined model ids
+#      offered in the picker. Omit to use the router's built-in default.
+#   2. set CLAUDE_ROUTER_MODEL — usually "__pick__" to open the picker, or a
+#      specific model id to skip the picker entirely.
+#   3. source router/router_engine.zsh and call claude_router.
+#   4. on success, exec claude — pass "$@" through unless your launcher has
+#      a specific reason to rewrite the arguments (see braining for that).
+#
+# Everything else — behavioural env vars, custom flags, prompts — is yours.
+# The router never reads anything launcher-specific; it only reads the
+# CLAUDE_ROUTER_* and ANTHROPIC_* env vars documented in the README.
+
+set -euo pipefail
+
+# Resolve repo root regardless of whether this file lives in launchers/ or
+# extras/launchers/ — works unmodified after copying into launchers/.
+_THIS="${0:A}"
+if [[ "${_THIS:h:t}" == 'launchers' && "${_THIS:h:h:t}" == 'extras' ]]; then
+    REPO_DIR="${_THIS:h:h:h}"   # extras/launchers/template -> repo root
+else
+    REPO_DIR="${_THIS:h:h}"     # launchers/<name>          -> repo root
+fi
+
+# ── 1. (optional) default model list ──────────────────────────────────────
+
+# typeset -a _MY_DEFAULTS
+# _MY_DEFAULTS=("openrouter/auto")
+# export CLAUDE_ROUTER_DEFAULT_MODELS="${(F)_MY_DEFAULTS}"
+
+# ── 2. model selection ─────────────────────────────────────────────────────
+
+export CLAUDE_ROUTER_MODEL="__pick__"
+
+# ── 3. load and run the router ────────────────────────────────────────────
+
+source "${REPO_DIR}/router/router_engine.zsh"
+claude_router || exit 1
+
+# ── 4. launch ──────────────────────────────────────────────────────────────
+
+exec claude "$@"
